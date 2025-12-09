@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=Edge" />
+    <title>Recipient Check</title>
+    <link rel="stylesheet" href="taskpane.css" />
+    <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  </head>
+  <body class="ms-font-m">
+    <header class="app-header">
+      <img class="logo" src="assets/icon-32.png" alt="Recipient Check" />
+      <h1>Recipient Check</h1>
+    </header>
+    <main>
+      <p>This add-in surfaces a ribbon command to validate recipients in a compose window.</p>
+      <button id="check-button" type="button">Check recipients</button>
+      <section id="status" aria-live="polite"></section>
+    </main>
+    <script src="taskpane.js"></script>
+  </body>
+</html>
