@@ -1,14 +1,33 @@
-type RecipientDetails = {
-  displayName: string;
-  emailAddress: string;
-  recipientType: 'to' | 'cc' | 'bcc';
-};
+import {
+  analyzeRecipients,
+  AnalysisOptions,
+  formatSummary,
+  getDomain,
+  RecipientDetails
+} from './recipientAnalysis';
+import { createLogger, isDebugEnabled, setDebugEnabled } from './logger';
 
 const notificationKey = 'recipient-check';
+const trustedDomains: string[] = [];
+const logger = createLogger('commands');
 
 Office.onReady(() => {
   Office.actions.associate('checkRecipients', checkRecipients);
 });
+
+function getUserDomain(): string {
+  const email = Office.context.mailbox?.userProfile?.emailAddress;
+  return getDomain(email);
+}
+
+function refreshDebugFlag() {
+  try {
+    const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('recipientCheckDebug') : null;
+    setDebugEnabled(stored === 'true');
+  } catch (error) {
+    console.warn('[RecipientCheck] Unable to read debug flag', error);
+  }
+}
 
 function getRecipients(field: 'to' | 'cc' | 'bcc'): Promise<RecipientDetails[]> {
   return new Promise((resolve, reject) => {
@@ -53,94 +72,8 @@ async function collectRecipients(): Promise<RecipientDetails[]> {
     getRecipients('cc'),
     getRecipients('bcc')
   ]);
+  logger.debug('Collected recipients by field', { to: toRecipients.length, cc: ccRecipients.length, bcc: bccRecipients.length });
   return [...toRecipients, ...ccRecipients, ...bccRecipients];
-}
-
-function getDomain(email: string | undefined): string {
-  if (!email) {
-    return '';
-  }
-  const domain = email.split('@')[1];
-  return domain ? domain.toLowerCase() : '';
-}
-
-function analyzeRecipients(recipients: RecipientDetails[]) {
-  const domainCounts = new Map<string, number>();
-  recipients.forEach((recipient) => {
-    const domain = getDomain(recipient.emailAddress);
-    if (domain) {
-      domainCounts.set(domain, (domainCounts.get(domain) || 0) + 1);
-    }
-  });
-
-  const sortedDomains = Array.from(domainCounts.entries()).sort((a, b) => b[1] - a[1]);
-  const primaryDomain = sortedDomains[0]?.[0] ?? '';
-
-  const outliers = primaryDomain
-    ? recipients.filter((recipient) => {
-        const domain = getDomain(recipient.emailAddress);
-        return domain && domain !== primaryDomain;
-      })
-    : [];
-
-  const namesToDomains = new Map<string, Set<string>>();
-  recipients.forEach((recipient) => {
-    const name = (recipient.displayName || recipient.emailAddress || '').trim().toLowerCase();
-    const domain = getDomain(recipient.emailAddress);
-    if (!name || !domain) {
-      return;
-    }
-    if (!namesToDomains.has(name)) {
-      namesToDomains.set(name, new Set());
-    }
-    namesToDomains.get(name)!.add(domain);
-  });
-
-  const similarNameDifferentDomain = Array.from(namesToDomains.entries())
-    .filter(([, domains]) => domains.size > 1)
-    .map(([name, domains]) => ({ name, domains: Array.from(domains).sort() }));
-
-  return {
-    domainCounts,
-    primaryDomain,
-    outliers,
-    similarNameDifferentDomain
-  };
-}
-
-function formatSummary(
-  recipients: RecipientDetails[],
-  analysis: ReturnType<typeof analyzeRecipients>
-): string {
-  const { primaryDomain, outliers, similarNameDifferentDomain, domainCounts } = analysis;
-  const sections: string[] = [];
-
-  sections.push(`Total recipients: ${recipients.length}`);
-
-  if (domainCounts.size > 0) {
-    const dominant = primaryDomain ? `${primaryDomain} (${domainCounts.get(primaryDomain)})` : 'varied';
-    sections.push(`Primary domain: ${dominant}`);
-  }
-
-  if (outliers.length > 0) {
-    const details = outliers
-      .map((recipient) => `${recipient.displayName} (${getDomain(recipient.emailAddress)})`)
-      .join('; ');
-    sections.push(`Domain outliers (${outliers.length}): ${details}`);
-  } else {
-    sections.push('No domain outliers detected.');
-  }
-
-  if (similarNameDifferentDomain.length > 0) {
-    const details = similarNameDifferentDomain
-      .map(({ name, domains }) => `${name} => ${domains.join(', ')}`)
-      .join('; ');
-    sections.push(`Same name on multiple domains: ${details}`);
-  } else {
-    sections.push('No same-name cross-domain recipients detected.');
-  }
-
-  return sections.join(' | ');
 }
 
 function showNotification(message: string): Promise<void> {
@@ -166,15 +99,26 @@ function showNotification(message: string): Promise<void> {
 }
 
 async function checkRecipients(event: Office.AddinCommands.Event) {
+  refreshDebugFlag();
+  logger.info('Starting recipient check', { debugEnabled: isDebugEnabled() });
   try {
     const recipients = await collectRecipients();
-    const analysis = analyzeRecipients(recipients);
+    const analysisOptions: AnalysisOptions = {
+      trustedDomains,
+      defaultPrimaryDomain: getUserDomain(),
+      logger
+    };
+    const analysis = analyzeRecipients(recipients, analysisOptions);
+    logger.debug('Analysis complete', analysis);
     const summary = formatSummary(recipients, analysis);
+    logger.info('Summary prepared for notification');
     await showNotification(summary);
   } catch (error: unknown) {
     const fallback = error instanceof Error ? error.message : 'Unknown error during recipient check.';
+    logger.error('Recipient check failed', error);
     await showNotification(`Recipient check failed: ${fallback}`);
   } finally {
+    logger.debug('Recipient check completed, signaling Office host.');
     event.completed();
   }
 }
